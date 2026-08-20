@@ -64,6 +64,22 @@ class Model:
     def vosk_model_find_word(self, word):
         return _c.vosk_model_find_word(self._handle, word.encode("utf-8"))
 
+    def FindWord(self, word):
+        """Return the word symbol, or -1 if the word is not in the model vocabulary.
+
+        Word symbol 0 is <epsilon>.
+        """
+        return _c.vosk_model_find_word(self._handle, word.encode("utf-8"))
+
+    def SupportsRuntimeGrammar(self):
+        """Whether the model can be reconfigured with a runtime grammar.
+
+        Models that ship a precompiled HCLG.fst cannot be constrained at
+        runtime, and passing a grammar to them fails. Check this before
+        relying on one.
+        """
+        return _c.vosk_model_supports_runtime_grammar(self._handle) != 0
+
     def get_model_path(self, model_name, lang):
         if model_name is None:
             model_path = self.get_model_by_lang(lang)
@@ -190,7 +206,26 @@ class KaldiRecognizer:
         _c.vosk_recognizer_set_spk_model(self._handle, spk_model._handle)
 
     def SetGrammar(self, grammar):
-        _c.vosk_recognizer_set_grm(self._handle, grammar.encode("utf-8"))
+        """Reconfigure the recognizer to use a grammar.
+
+        Returns True if the grammar was applied. Returns False when the model
+        has no HCLr.fst/Gr.fst pair (see Model.SupportsRuntimeGrammar), when
+        the recognizer is already running, or when the grammar is not a JSON
+        array of strings. On failure the recognizer is left untouched.
+        """
+        return _c.vosk_recognizer_set_grm(self._handle, grammar.encode("utf-8")) != 0
+
+    def GrammarMissingWords(self):
+        """Grammar words that are not in the model vocabulary.
+
+        Words missing from the model's words.txt are dropped from the grammar,
+        so the decoder can never match them and anyone who says a dropped word
+        is scored as having said something else.
+
+        Returns a list of the dropped words, empty when nothing was dropped.
+        """
+        return json.loads(_ffi.string(
+            _c.vosk_recognizer_grammar_missing_words(self._handle)).decode("utf-8"))
 
     def AcceptWaveform(self, data):
         res = _c.vosk_recognizer_accept_waveform(self._handle, data, len(data))

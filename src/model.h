@@ -45,6 +45,7 @@ public:
     void Ref();
     void Unref();
     int FindWord(const char *word);
+    bool SupportsRuntimeGrammar() const;
 
 protected:
     ~Model();

@@ -48,7 +48,7 @@ class Recognizer {
         ~Recognizer();
         void SetMaxAlternatives(int max_alternatives);
         void SetSpkModel(SpkModel *spk_model);
-        void SetGrm(char const *grammar);
+        bool SetGrm(char const *grammar);
         void SetWords(bool words);
         void SetPartialWords(bool partial_words);
         void SetNLSML(bool nlsml);
@@ -60,6 +60,7 @@ class Recognizer {
         const char* Result();
         const char* FinalResult();
         const char* PartialResult();
+        const char* GrammarMissingWords();
         void Reset();
 
     private:
@@ -67,7 +68,13 @@ class Recognizer {
         void InitRescoring();
         void CleanUp();
         void UpdateSilenceWeights();
-        void UpdateGrammarFst(char const *grammar);
+        // Builds a grammar graph without touching live recognizer state.
+        // On success the caller owns *out_g_fst and *out_decode_fst, and
+        // *out_decode_fst references *out_g_fst so it must be freed first.
+        bool BuildGrammarFst(char const *grammar,
+                             fst::StdVectorFst **out_g_fst,
+                             fst::LookaheadFst<fst::StdArc, int32> **out_decode_fst,
+                             string *out_missing_words);
         bool AcceptWaveform(Vector<BaseFloat> &wdata);
         bool GetSpkVector(Vector<BaseFloat> &out_xvector, int *frames);
         const char *GetResult();
@@ -114,6 +121,9 @@ class Recognizer {
 
         RecognizerState state_;
         string last_result_;
+        // JSON array of passage tokens dropped from the last grammar
+        // update because they are not in the model vocabulary.
+        string grm_missing_words_ = "[]";
 };
 
 #endif /* VOSK_KALDI_RECOGNIZER_H */

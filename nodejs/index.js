@@ -87,6 +87,8 @@ const libvosk = ffi.Library(soname, {
     'vosk_set_log_level': ['void', ['int']],
     'vosk_model_new': [vosk_model_ptr, ['string']],
     'vosk_model_free': ['void', [vosk_model_ptr]],
+    'vosk_model_find_word': ['int', [vosk_model_ptr, 'string']],
+    'vosk_model_supports_runtime_grammar': ['int', [vosk_model_ptr]],
     'vosk_spk_model_new': [vosk_spk_model_ptr, ['string']],
     'vosk_spk_model_free': ['void', [vosk_spk_model_ptr]],
     'vosk_recognizer_new': [vosk_recognizer_ptr, [vosk_model_ptr, 'float']],
@@ -133,6 +135,27 @@ class Model {
         if (!this.handle) {
             throw new Error('Failed to create a model.');
         }
+    }
+
+    /**
+     * Check if a word can be recognized by the model
+     * @param {string} word The word to look up
+     * @returns {number} The word symbol, or -1 if the word is not in the model
+     *                   vocabulary. Word symbol 0 is <epsilon>.
+     */
+    findWord(word) {
+        return libvosk.vosk_model_find_word(this.handle, word);
+    }
+
+    /**
+     * Check whether the model can be reconfigured with a runtime grammar.
+     *
+     * Models that ship a precompiled HCLG.fst cannot be constrained at runtime,
+     * and passing a grammar to them fails. Check this before relying on one.
+     * @returns {boolean} true if runtime grammars are supported
+     */
+    supportsRuntimeGrammar() {
+        return libvosk.vosk_model_supports_runtime_grammar(this.handle) !== 0;
     }
 
     /**

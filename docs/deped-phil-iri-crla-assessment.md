@@ -139,6 +139,11 @@ Compare the model layouts:
 | `HCLG.fst` | — | 701 MB |
 | Runtime grammar | supported | **unsupported** |
 
+> **Addressed in this fork.** `vosk_model_supports_runtime_grammar()` now reports
+> the capability up front, `vosk_recognizer_new_grm()` returns `NULL` instead of a
+> free-decoding recognizer, and `vosk_recognizer_set_grm()` returns a status. See
+> §5.A2. The model limitation itself is unchanged — only its visibility.
+
 The dangerous part is what happens next. In `src/recognizer.cc`:
 
 ```cpp
@@ -280,6 +285,9 @@ is even in the model's vocabulary before constraining to it — is wrapped in Py
 and Ruby, but **not in the Java, Android or Node.js bindings**. Android is precisely
 where a DepEd app would need it.
 
+> **Addressed in this fork.** `findWord()` and `supportsRuntimeGrammar()` are now
+> wrapped in the Java, Android, Node.js and Python bindings. See §5.A5.
+
 (Endpointer controls, by contrast, *are* exposed in both the Java and Python bindings
 in this checkout — `setEndpointerMode` / `setEndpointerDelays`. Those need
 configuration for child readers, not new code; see §5.A6.)
@@ -297,6 +305,9 @@ A passage word that is not in `words.txt` — a local place name, a pupil's name
 loanword — is dropped from the grammar with only a suppressed warning. The passage
 FST then cannot match it, so a child who reads it *correctly* is scored as having
 produced garbage. The caller gets no indication this happened.
+
+> **Addressed in this fork.** Dropped tokens are collected and returned by
+> `vosk_recognizer_grammar_missing_words()`. See §5.A3.
 
 ---
 
@@ -321,15 +332,23 @@ back-jump, garbage-self-loop and early-exit arcs, instead of routing through
 skipped, repeated or substituted. This turns miscue detection from a downstream
 guess into a decoder output. It also fixes §4.4.
 
-**A2. Make "grammar unsupported" impossible to miss.** Add
-`int vosk_model_supports_runtime_grammar(VoskModel *model);` and have the grammar
-constructor and `SetGrm` report failure through a return code rather than a warning
-that `SetLogLevel(-1)` erases. Small patch; prevents an entire class of silently
-invalid deployment (§4.1).
+**A2. Make "grammar unsupported" impossible to miss.** ✅ **Done.**
+`int vosk_model_supports_runtime_grammar(VoskModel *model)` reports the capability,
+`vosk_recognizer_new_grm()` returns `NULL` rather than a recognizer that ignores the
+grammar, and `vosk_recognizer_set_grm()` returns `1`/`0` instead of warning into a
+log that `SetLogLevel(-1)` erases. Prevents an entire class of silently invalid
+deployment (§4.1).
 
-**A3. Report dropped OOV passage words to the caller.** Return the list of tokens
-that were not found in `words.txt` so the app can warn the teacher, or fall back to
-a phonetic spelling, instead of silently mis-scoring (§4.10).
+While restructuring this, a pre-existing use-after-free surfaced and was fixed:
+`SetGrm()` freed `decode_fst_` *before* building the replacement, so a grammar that
+failed to build left `decoder_` holding a freed graph and the destructor
+double-freeing it. The replacement graph is now built first and swapped in only on
+success, which also means a rejected grammar leaves the recognizer usable.
+
+**A3. Report dropped OOV passage words to the caller.** ✅ **Done.**
+`vosk_recognizer_grammar_missing_words()` returns the tokens that were not found in
+`words.txt`, as a JSON array, so the app can warn the teacher or fall back to a
+phonetic spelling instead of silently mis-scoring (§4.10).
 
 **A4. Expose phone-level alignment and a pronunciation score.** Add
 `vosk_recognizer_set_phones(recognizer, 1)` emitting phone segments with times, and a
@@ -337,8 +356,11 @@ per-word goodness-of-pronunciation value. The lattice and `word_boundary.int` al
 carry what is needed. Unlocks mispronunciation-vs-substitution for Phil-IRI and letter-
 sound scoring for CRLA (§4.5). Highest engineering effort in Tier A; sequence it after A1.
 
-**A5. Binding parity for Android.** Wrap `vosk_model_find_word` in the Java, Android
-and Node.js bindings (§4.9). Trivial, and needed by any real on-device passage check.
+**A5. Binding parity for Android.** ✅ **Done.** `findWord()` and
+`supportsRuntimeGrammar()` are wrapped in the Java, Android, Node.js and Python
+bindings; Java and Android also expose `setGrammar()`'s status and
+`getGrammarMissingWords()` (§4.9). Needed by any real on-device passage check.
+Node.js still does not expose `set_grm` at all, which is a separate gap.
 
 **A6. A child-oral-reading endpointer profile.** Beginning readers pause for seconds
 mid-passage. Default endpointing will cut utterances at exactly the wrong moments.
@@ -356,8 +378,39 @@ pruned and cleaned lexicon (the current 236 k vocabulary contains junk tokens li
 directory in this repo carries a Kaldi TDNN-chain recipe that is a reasonable
 starting point.
 
+*Route check — how much of the original build is recoverable?* The `tl-ph` model came
+from [`feddybear/flipside_ph`](https://github.com/feddybear/flipside_ph), whose `s5/`
+recipe is public: `local/fph_prepare_dict.sh`, `01_lexicon_building.ipynb`, the conf
+files and the chain scripts are all there. That confirms the phone set and the
+dictionary pipeline, and `fph_prepare_dict.sh` shows the `<unk> SPN` mapping — a
+single spoken-noise phone, not a phone loop, which is exactly why the shipped model
+cannot reject off-passage speech (§4.2).
+
+**The lexicon itself is not in the repository, and is not generated by rule.**
+`01_lexicon_building.ipynb` builds it from
+`data/raw/KIT_TGL/TEXT_DATA/kaldi_lexicon` — a base lexicon distributed with the
+licensed KIT/CMU Tagalog corpus — merged with CMUdict for code-switched English. So
+the recipe is reusable but the dictionary is not redistributable from this source.
+The repository is also marked deprecated.
+
+Practical consequence: **B1 needs a Filipino G2P we own.** That is a well-scoped
+piece of work rather than a blocker — Tagalog orthography is close to phonemic, so a
+rule-based G2P covers most of the vocabulary, with the real effort going into the
+`ng` digraph, glottal stop, stress, and Spanish/English loanwords.
+[`AngelAquino/g2p-asr`](https://github.com/AngelAquino/g2p-asr) publishes a phone
+inventory and phonetic transcriptions for Tagalog, Cebuano and Hiligaynon that are
+worth evaluating as a starting point, though it states no license — check before use.
+Owning the G2P also fixes §4.10 properly, since it lets the app derive a pronunciation
+for a passage word the model has never seen instead of dropping it.
+
 **B2. A Filipino child oral-reading corpus.** The single highest-value data asset,
-and the one only DepEd can realistically create. Even a few dozen hours of Grade 1–6
+and the one only DepEd can realistically create. One existing resource is worth
+checking first: the
+[Philippine Languages Database](https://aclanthology.org/2024.sigul-1.32.pdf)
+(Guevara, Cajote, Bayona and Lucas; ISLRN 934-396-101-948-2) is a multilingual
+Philippine speech corpus that appears to include child speakers, from the same
+institution behind the Filipino Speech Corpus already used in `tl-ph`. Its exact
+per-language hours, demographics and licensing need to be confirmed with the authors. Even a few dozen hours of Grade 1–6
 children reading Phil-IRI/CRLA-style passages, transcribed with miscues marked,
 would (a) allow acoustic fine-tuning, (b) give a real validation set against
 teacher-scored ground truth, and (c) let us report per-grade error rates — which is
@@ -383,7 +436,7 @@ Build it against the §4.6 finding — align and use timing, do not threshold on
 
 | Phase | Work | Gate |
 |---|---|---|
-| 0 | A2, A3, A5 — make failures visible | No behaviour change; safe to merge first |
+| 0 | A2, A3, A5 — make failures visible | ✅ Shipped |
 | 1 | **B1** — small Filipino lookahead model with `[unk]` | Grammar decode demonstrably works in Filipino |
 | 2 | A1 — passage tracker FST; Tier C scoring layer | Miscue output validated against teacher scoring |
 | 3 | B2 — child corpus; acoustic fine-tune; A6 tuning | Per-grade error rates measured and published |
@@ -391,7 +444,7 @@ Build it against the §4.6 finding — align and use timing, do not threshold on
 | 5 | B3 — mother-tongue models | Per language, as data allows |
 
 Phases 0 and 1 are independent and can run in parallel — but **Phase 1 gates
-everything else for Filipino.**
+everything else for Filipino.** Phase 1 now carries a G2P sub-task, see B1.
 
 ---
 

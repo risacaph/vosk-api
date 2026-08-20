@@ -18,6 +18,7 @@
 #include "lat/sausages.h"
 #include "language_model.h"
 
+#include <memory>
 #include <unordered_set>
 
 using namespace fst;
@@ -50,21 +51,32 @@ Recognizer::Recognizer(Model *model, float sample_frequency) : model_(model), sp
 
 Recognizer::Recognizer(Model *model, float sample_frequency, char const *grammar) : model_(model), spk_model_(0), sample_frequency_(sample_frequency)
 {
+    // Check before taking a reference or allocating anything, so that throwing
+    // here leaves no partially constructed state behind. Previously this only
+    // warned and then fell through to the full HCLG graph, handing the caller a
+    // recognizer that silently ignored the grammar and free-decoded instead.
+    if (!model_->SupportsRuntimeGrammar()) {
+        KALDI_ERR << "Runtime graphs are not supported by this model, it has no "
+                  << "HCLr.fst/Gr.fst pair. Check vosk_model_supports_runtime_grammar().";
+    }
+
+    // Build the grammar graph first. Nothing else is allocated yet, so a
+    // malformed grammar throws without leaving anything behind.
+    if (!BuildGrammarFst(grammar, &g_fst_, &decode_fst_, &grm_missing_words_)) {
+        KALDI_ERR << "Failed to build a grammar graph from: " << grammar;
+    }
+
     model_->Ref();
 
     feature_pipeline_ = new kaldi::OnlineNnet2FeaturePipeline (model_->feature_info_);
     silence_weighting_ = new kaldi::OnlineSilenceWeighting(*model_->trans_model_, model_->feature_info_.silence_weighting_config, 3);
 
-    if (model_->hcl_fst_) {
-        UpdateGrammarFst(grammar);
-    } else {
-        KALDI_WARN << "Runtime graphs are not supported by this model";
-    }
-
+    // SupportsRuntimeGrammar() implies there is no precompiled HCLG to fall
+    // back to, so the composed lookahead graph is always the one to decode with.
     decoder_ = new kaldi::SingleUtteranceNnet3IncrementalDecoder(model_->nnet3_decoding_config_,
             *model_->trans_model_,
             *model_->decodable_info_,
-            model_->hclg_fst_ ? *model_->hclg_fst_ : *decode_fst_,
+            *decode_fst_,
             feature_pipeline_);
 
     InitState();
@@ -103,8 +115,10 @@ Recognizer::~Recognizer() {
     delete decoder_;
     delete feature_pipeline_;
     delete silence_weighting_;
-    delete g_fst_;
+    // decode_fst_ is composed from g_fst_ and holds a reference to it, so it
+    // has to go first.
     delete decode_fst_;
+    delete g_fst_;
     delete spk_feature_;
 
     delete lm_to_subtract_;
@@ -274,31 +288,47 @@ void Recognizer::SetSpkModel(SpkModel *spk_model)
     spk_feature_ = new OnlineMfcc(spk_model_->spkvector_mfcc_opts);
 }
 
-void Recognizer::SetGrm(char const *grammar)
+bool Recognizer::SetGrm(char const *grammar)
 {
     if (state_ == RECOGNIZER_RUNNING) {
-        KALDI_ERR << "Can't add grammar to already running recognizer";
-        return;
+        KALDI_WARN << "Can't add grammar to already running recognizer";
+        return false;
     }
 
-    if (!model_->hcl_fst_) {
-        KALDI_WARN << "Runtime graphs are not supported by this model";
-        return;
+    if (!model_->SupportsRuntimeGrammar()) {
+        KALDI_WARN << "Runtime graphs are not supported by this model, it has no "
+                   << "HCLr.fst/Gr.fst pair. Check vosk_model_supports_runtime_grammar().";
+        return false;
     }
 
-    delete decode_fst_;
+    // Build the replacement graph before touching any live state. Previously
+    // the old graph was freed first, so a grammar that failed to build left
+    // decoder_ pointing at freed memory and the destructor double-freeing it.
+    fst::StdVectorFst *new_g_fst = nullptr;
+    fst::LookaheadFst<fst::StdArc, int32> *new_decode_fst = nullptr;
+    string new_missing_words = "[]";
 
     if (!strcmp(grammar, "[]")) {
-        decode_fst_ = LookaheadComposeFst(*model_->hcl_fst_, *model_->g_fst_, model_->disambig_);
-    } else {
-        UpdateGrammarFst(grammar);
+        new_decode_fst = LookaheadComposeFst(*model_->hcl_fst_, *model_->g_fst_, model_->disambig_);
+    } else if (!BuildGrammarFst(grammar, &new_g_fst, &new_decode_fst, &new_missing_words)) {
+        // The recognizer is untouched and still usable with its current graph.
+        return false;
     }
 
     samples_round_start_ += samples_processed_;
     samples_processed_ = 0;
     frame_offset_ = 0;
 
+    // Tear the decoder down before the graph it holds a reference to, and the
+    // composed graph before the grammar FST it was composed from.
     delete decoder_;
+    decoder_ = nullptr;
+    delete decode_fst_;
+    delete g_fst_;
+    decode_fst_ = new_decode_fst;
+    g_fst_ = new_g_fst;
+    grm_missing_words_ = new_missing_words;
+
     delete feature_pipeline_;
     delete silence_weighting_;
 
@@ -316,17 +346,28 @@ void Recognizer::SetGrm(char const *grammar)
     }
 
     state_ = RECOGNIZER_INITIALIZED;
+
+    return true;
 }
 
 
-void Recognizer::UpdateGrammarFst(char const *grammar)
+const char *Recognizer::GrammarMissingWords()
+{
+    return grm_missing_words_.c_str();
+}
+
+
+bool Recognizer::BuildGrammarFst(char const *grammar,
+                                 fst::StdVectorFst **out_g_fst,
+                                 fst::LookaheadFst<fst::StdArc, int32> **out_decode_fst,
+                                 string *out_missing_words)
 {
     json::JSON obj;
     obj = json::JSON::Load(grammar);
 
     if (obj.length() <= 0) {
         KALDI_WARN << "Expecting array of strings, got: '" << grammar << "'";
-        return;
+        return false;
     }
 
     KALDI_LOG << obj;
@@ -336,34 +377,56 @@ void Recognizer::UpdateGrammarFst(char const *grammar)
     opts.ngram_order = 2;
     opts.discount = 0.5;
 
+    // Tokens dropped here cannot be matched by the decoder afterwards, so a
+    // speaker who reads them correctly is scored as having said something
+    // else. Collect them so the caller can react instead of only seeing a log
+    // line that SetLogLevel(-1) hides.
+    json::JSON missing = json::Array();
+    std::unordered_set<string> missing_seen;
+
     LanguageModelEstimator estimator(opts);
     for (int i = 0; i < obj.length(); i++) {
         bool ok;
         string line = obj[i].ToString(ok);
         if (!ok) {
-            KALDI_ERR << "Expecting array of strings, got: '" << obj << "'";
+            KALDI_WARN << "Expecting array of strings, got: '" << obj << "'";
+            return false;
         }
 
         std::vector<int32> sentence;
         stringstream ss(line);
         string token;
         while (getline(ss, token, ' ')) {
+            if (token.empty()) {
+                continue;
+            }
             int32 id = model_->word_syms_->Find(token);
             if (id == kNoSymbol) {
                 KALDI_WARN << "Ignoring word missing in vocabulary: '" << token << "'";
+                if (missing_seen.insert(token).second) {
+                    missing.append(token);
+                }
             } else {
                 sentence.push_back(id);
             }
         }
         estimator.AddCounts(sentence);
     }
-    delete g_fst_;
-    g_fst_ = new StdVectorFst();
-    estimator.Estimate(g_fst_);
 
-    decode_fst_ = LookaheadComposeFst(*model_->hcl_fst_, *g_fst_, model_->disambig_);
+    std::unique_ptr<fst::StdVectorFst> g_fst(new StdVectorFst());
+    estimator.Estimate(g_fst.get());
+
+    fst::LookaheadFst<fst::StdArc, int32> *decode_fst =
+        LookaheadComposeFst(*model_->hcl_fst_, *g_fst, model_->disambig_);
+
+    // Publish only once everything is built, so a throw above leaks nothing and
+    // leaves the caller's pointers untouched.
+    *out_g_fst = g_fst.release();
+    *out_decode_fst = decode_fst;
+    *out_missing_words = missing_seen.empty() ? "[]" : missing.dump();
+
+    return true;
 }
-
 
 bool Recognizer::AcceptWaveform(const char *data, int len)
 {

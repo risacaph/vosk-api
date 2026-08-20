@@ -76,6 +76,20 @@ void vosk_model_free(VoskModel *model);
 int vosk_model_find_word(VoskModel *model, const char *word);
 
 
+/** Check whether the model can be reconfigured with a runtime grammar
+ *
+ * Runtime grammars are composed on the fly from the lookahead pair
+ * HCLr.fst + Gr.fst. Models that ship a precompiled HCLG.fst instead cannot be
+ * constrained at runtime, and vosk_recognizer_new_grm() /
+ * vosk_recognizer_set_grm() will fail on them.
+ *
+ * Check this before relying on a grammar, otherwise the only difference
+ * between a constrained and an unconstrained recognizer is the output.
+ *
+ * @returns 1 if runtime grammars are supported, 0 otherwise */
+int vosk_model_supports_runtime_grammar(VoskModel *model);
+
+
 /** Loads speaker model data from the file and returns the model object
  *
  * @param model_path: the path of the model on the filesystem
@@ -135,7 +149,11 @@ VoskRecognizer *vosk_recognizer_new_spk(VoskModel *model, float sample_rate, Vos
  *  @param grammar The string with the list of phrases to recognize as JSON array of strings,
  *                 for example "["one two three four five", "[unk]"]".
  *
- *  @returns recognizer object or NULL if problem occured */
+ *  @returns recognizer object, or NULL if the grammar could not be applied.
+ *           This includes the case where the model has no HCLr.fst/Gr.fst pair,
+ *           see vosk_model_supports_runtime_grammar(). Earlier versions returned
+ *           a recognizer that quietly ignored the grammar and decoded against
+ *           the full graph instead. */
 VoskRecognizer *vosk_recognizer_new_grm(VoskModel *model, float sample_rate, const char *grammar);
 
 
@@ -150,11 +168,35 @@ void vosk_recognizer_set_spk_model(VoskRecognizer *recognizer, VoskSpkModel *spk
 
 /** Reconfigures recognizer to use grammar
  *
+ * On failure the recognizer is left untouched and keeps decoding with the
+ * graph it already had.
+ *
  * @param recognizer   Already running VoskRecognizer
  * @param grammar      Set of phrases in JSON array of strings or "[]" to use default model graph.
  *                     See also vosk_recognizer_new_grm
+ *
+ * @returns 1 if the grammar was applied, 0 otherwise. It returns 0 when the
+ *          model has no HCLr.fst/Gr.fst pair (see
+ *          vosk_model_supports_runtime_grammar()), when the recognizer is
+ *          already running, and when the grammar is not a JSON array of
+ *          strings.
  */
-void vosk_recognizer_set_grm(VoskRecognizer *recognizer, char const *grammar);
+int vosk_recognizer_set_grm(VoskRecognizer *recognizer, char const *grammar);
+
+
+/** Returns the grammar words that are not in the model vocabulary
+ *
+ * Words passed to vosk_recognizer_new_grm() / vosk_recognizer_set_grm() that
+ * are missing from the model's words.txt are dropped from the grammar, so the
+ * decoder can never match them. Anyone who says a dropped word is scored as
+ * having said something else.
+ *
+ * @returns JSON array of the dropped words, in the order they appeared, e.g.
+ *          "["bakuran","kubo"]". Returns "[]" when nothing was dropped or when
+ *          no grammar has been applied. The pointer stays valid until the next
+ *          grammar update or until the recognizer is freed.
+ */
+const char *vosk_recognizer_grammar_missing_words(VoskRecognizer *recognizer);
 
 
 /** Configures recognizer to output n-best results
