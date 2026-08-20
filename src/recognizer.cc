@@ -379,8 +379,9 @@ bool Recognizer::BuildGrammarFst(char const *grammar,
 
     // Tokens dropped here cannot be matched by the decoder afterwards, so a
     // speaker who reads them correctly is scored as having said something
-    // else. Collect them so the caller can react instead of only seeing a log
-    // line that SetLogLevel(-1) hides.
+    // else. The warning below goes to stderr, which an app on Android or
+    // behind a GUI never sees, so collect them and give the caller something
+    // it can actually check.
     json::JSON missing = json::Array();
     std::unordered_set<string> missing_seen;
 

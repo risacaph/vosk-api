@@ -157,10 +157,15 @@ decoder_ = new kaldi::SingleUtteranceNnet3IncrementalDecoder(...,
 ```
 
 The constructor **succeeds** and quietly falls back to full free decoding. The only
-signal is a Kaldi warning — and every example in this repo, including
-`python/example/test_srt.py`, calls `SetLogLevel(-1)` first. An app team would ship a
-"passage-constrained" reading assessor that is in fact free-decoding, and nothing in
-the API would tell them.
+signal is a Kaldi warning printed to stderr — nothing in the API reports it, and the
+recognizer that comes back looks perfectly valid. An app on Android or behind a GUI
+never sees stderr, so a team would ship a "passage-constrained" reading assessor that
+is in fact free-decoding, with no programmatic way to find out.
+
+> Note: an earlier draft of this document said `SetLogLevel(-1)` suppresses the
+> warning. That is wrong — testing against a locally built `libvosk` confirmed
+> `KALDI_WARN` prints at every log level. The problem is that it only ever reaches
+> stderr, not that it is hidden.
 
 ### 4.2 The Filipino model has no `[unk]`, so it cannot reject off-passage speech
 
@@ -335,8 +340,8 @@ guess into a decoder output. It also fixes §4.4.
 **A2. Make "grammar unsupported" impossible to miss.** ✅ **Done.**
 `int vosk_model_supports_runtime_grammar(VoskModel *model)` reports the capability,
 `vosk_recognizer_new_grm()` returns `NULL` rather than a recognizer that ignores the
-grammar, and `vosk_recognizer_set_grm()` returns `1`/`0` instead of warning into a
-log that `SetLogLevel(-1)` erases. Prevents an entire class of silently invalid
+grammar, and `vosk_recognizer_set_grm()` returns `1`/`0` instead of warning to a stderr stream
+that an app never reads. Prevents an entire class of silently invalid
 deployment (§4.1).
 
 While restructuring this, a pre-existing use-after-free surfaced and was fixed:
@@ -491,7 +496,7 @@ unzip -q vosk-model-small-en-us-0.15.zip && unzip -q vosk-model-tl-ph-generic-0.
 ls vosk-model-small-en-us-0.15/graph/    # HCLr.fst  Gr.fst  -> grammars supported
 ls vosk-model-tl-ph-generic-0.6/graph/   # HCLG.fst        -> grammars unsupported
 
-# §4.1/§4.2 — keep Kaldi logging ON, or the warnings are invisible
+# §4.1/§4.2 — KALDI_WARN prints at any log level, but only ever to stderr
 python3 - <<'PY'
 import json
 from vosk import Model, KaldiRecognizer, SetLogLevel
