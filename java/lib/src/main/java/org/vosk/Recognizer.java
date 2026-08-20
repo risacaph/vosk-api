@@ -221,11 +221,31 @@ public class Recognizer extends PointerType implements AutoCloseable {
     /**
      * Reconfigures recognizer to use grammar.
      *
+     * On failure the recognizer is left untouched and keeps decoding with the
+     * graph it already had.
+     *
      * @param grammar      Set of phrases in JSON array of strings or "[]" to use default model graph.
+     * @return true if the grammar was applied. False when the model has no
+     *         HCLr.fst/Gr.fst pair (see {@link Model#supportsRuntimeGrammar()}),
+     *         when the recognizer is already running, or when the grammar is not
+     *         a JSON array of strings.
      * @see #Recognizer(Model, float, String)
      */
-    public void setGrammar(String grammar) {
-        LibVosk.vosk_recognizer_set_grm(this.getPointer(), grammar);
+    public boolean setGrammar(String grammar) {
+        return LibVosk.vosk_recognizer_set_grm(this.getPointer(), grammar) != 0;
+    }
+
+    /**
+     * Returns the grammar words that are not in the model vocabulary.
+     *
+     * Words missing from the model's words.txt are dropped from the grammar, so
+     * the decoder can never match them and anyone who says a dropped word is
+     * scored as having said something else.
+     *
+     * @return JSON array of the dropped words, or "[]" when nothing was dropped.
+     */
+    public String getGrammarMissingWords() {
+        return LibVosk.vosk_recognizer_grammar_missing_words(this.getPointer());
     }
 
     /**

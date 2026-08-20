@@ -50,6 +50,14 @@ int vosk_model_find_word(VoskModel *model, const char *word)
     return (int) ((Model *)model)->FindWord(word);
 }
 
+int vosk_model_supports_runtime_grammar(VoskModel *model)
+{
+    if (model == nullptr) {
+        return 0;
+    }
+    return ((Model *)model)->SupportsRuntimeGrammar() ? 1 : 0;
+}
+
 VoskSpkModel *vosk_spk_model_new(const char *model_path)
 {
     try {
@@ -122,12 +130,25 @@ void vosk_recognizer_set_spk_model(VoskRecognizer *recognizer, VoskSpkModel *spk
     ((Recognizer *)recognizer)->SetSpkModel((SpkModel *)spk_model);
 }
 
-void vosk_recognizer_set_grm(VoskRecognizer *recognizer, char const *grammar)
+int vosk_recognizer_set_grm(VoskRecognizer *recognizer, char const *grammar)
+{
+    if (recognizer == nullptr || grammar == nullptr) {
+       return 0;
+    }
+    try {
+        return ((Recognizer *)recognizer)->SetGrm(grammar) ? 1 : 0;
+    } catch (...) {
+        // Never let a C++ exception cross the C boundary.
+        return 0;
+    }
+}
+
+const char *vosk_recognizer_grammar_missing_words(VoskRecognizer *recognizer)
 {
     if (recognizer == nullptr) {
-       return;
+       return "[]";
     }
-    ((Recognizer *)recognizer)->SetGrm(grammar);
+    return ((Recognizer *)recognizer)->GrammarMissingWords();
 }
 
 void vosk_recognizer_set_endpointer_mode(VoskRecognizer *recognizer, VoskEndpointerMode mode)

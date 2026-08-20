@@ -379,6 +379,14 @@ int Model::FindWord(const char *word)
     return word_syms_->Find(word);
 }
 
+bool Model::SupportsRuntimeGrammar() const
+{
+    // Runtime grammars are composed on the fly from the lookahead pair
+    // HCLr.fst + Gr.fst. Models that ship a precompiled HCLG.fst cannot
+    // be reconfigured at runtime.
+    return hcl_fst_ != nullptr && g_fst_ != nullptr;
+}
+
 Model::~Model() {
     delete decodable_info_;
     delete trans_model_;

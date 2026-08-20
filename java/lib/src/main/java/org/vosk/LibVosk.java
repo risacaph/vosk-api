@@ -48,6 +48,10 @@ public class LibVosk {
 
     public static native void vosk_model_free(Pointer model);
 
+    public static native int vosk_model_find_word(Pointer model, String word);
+
+    public static native int vosk_model_supports_runtime_grammar(Pointer model);
+
     public static native Pointer vosk_spk_model_new(String path);
 
     public static native void vosk_spk_model_free(Pointer model);
@@ -78,7 +82,9 @@ public class LibVosk {
 
     public static native String vosk_recognizer_partial_result(Pointer recognizer);
 
-    public static native void vosk_recognizer_set_grm(Pointer recognizer, String grammar);
+    public static native int vosk_recognizer_set_grm(Pointer recognizer, String grammar);
+
+    public static native String vosk_recognizer_grammar_missing_words(Pointer recognizer);
 
     public static native void vosk_recognizer_reset(Pointer recognizer);
 
